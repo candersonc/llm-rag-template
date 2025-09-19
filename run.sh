@@ -42,10 +42,127 @@ fi
 
 # Step 4: Install Python dependencies if needed
 echo "📚 Checking Python dependencies..."
-if ! python3 -c "import chromadb" 2>/dev/null; then
-    echo "📦 Installing required Python packages..."
-    pip3 install chromadb sentence-transformers requests tqdm beautifulsoup4 PyPDF2 --quiet
+
+# Function to check package version
+check_version() {
+    local package=$1
+    local min_version=$2
+    local max_version=$3
+
+    version=$(python3 -c "import $package; print($package.__version__)" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "not_installed"
+        return 1
+    fi
+
+    echo "$version"
+    return 0
+}
+
+# Function to verify version compatibility
+verify_dependencies() {
+    echo "🔍 Verifying package versions..."
+
+    # Check critical package versions
+    torch_ver=$(check_version "torch" "" "")
+    transformers_ver=$(check_version "transformers" "" "")
+    sentence_transformers_ver=$(check_version "sentence_transformers" "" "")
+    chromadb_ver=$(check_version "chromadb" "" "")
+
+    # Known compatibility issues - test actual import
+    if [[ "$torch_ver" != "not_installed" ]] && [[ "$transformers_ver" != "not_installed" ]] && [[ "$sentence_transformers_ver" != "not_installed" ]]; then
+        # Test if packages can actually work together
+        python3 -c "
+import sys
+try:
+    import torch
+    import transformers
+    from sentence_transformers import SentenceTransformer
+    # If we get here, packages are compatible
+except ImportError as e:
+    print('⚠️  Package compatibility issue detected:')
+    print('  ', str(e))
+    print()
+    print('   Recommended fix:')
+    print('   pip3 install -r requirements.txt --force-reinstall')
+    sys.exit(1)
+except Exception as e:
+    # Other errors are not version conflicts
+    pass
+" 2>/dev/null
+
+        if [ $? -ne 0 ]; then
+            echo ""
+            echo "❌ Package version conflict detected. Please fix the versions above."
+            echo ""
+            read -p "Would you like to automatically fix the version conflict? (y/n) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo "🔧 Fixing package versions by reinstalling from requirements.txt..."
+                # Force reinstall with correct versions
+                pip3 uninstall -y torch transformers sentence-transformers tokenizers 2>/dev/null
+                pip3 install -r requirements.txt --force-reinstall --no-deps
+                pip3 install -r requirements.txt
+
+                # Verify the fix worked
+                python3 -c "
+import torch
+import transformers
+import torch.utils._pytree as pytree
+if not hasattr(pytree, 'register_pytree_node') and hasattr(pytree, '_register_pytree_node'):
+    print('❌ Version conflict still exists after reinstall')
+    exit(1)
+print('✅ Package versions fixed successfully')
+" || exit 1
+            else
+                echo ""
+                echo "📝 To fix manually, run:"
+                echo "   pip3 uninstall torch transformers sentence-transformers"
+                echo "   pip3 install -r requirements.txt"
+                exit 1
+            fi
+        fi
+    fi
+
+    # Display current versions
+    echo "   ✓ torch: ${torch_ver:-not installed}"
+    echo "   ✓ transformers: ${transformers_ver:-not installed}"
+    echo "   ✓ sentence-transformers: ${sentence_transformers_ver:-not installed}"
+    echo "   ✓ chromadb: ${chromadb_ver:-not installed}"
+}
+
+# Check if packages are installed
+missing_packages=()
+for package in chromadb sentence_transformers transformers torch tqdm beautifulsoup4 PyPDF2 requests; do
+    if ! python3 -c "import ${package//-/_}" 2>/dev/null; then
+        missing_packages+=($package)
+    fi
+done
+
+if [ ${#missing_packages[@]} -gt 0 ]; then
+    echo "📦 Installing required Python packages from requirements.txt..."
+    echo "   Missing packages: ${missing_packages[*]}"
+
+    # Use requirements.txt to ensure correct versions
+    pip3 install -r requirements.txt --quiet
+    if [ $? -ne 0 ]; then
+        echo ""
+        echo "❌ Failed to install packages quietly. Retrying with verbose output..."
+        pip3 install -r requirements.txt
+        if [ $? -ne 0 ]; then
+            echo ""
+            echo "❌ Installation failed. Common fixes:"
+            echo "   1. Update pip: pip3 install --upgrade pip"
+            echo "   2. Clear pip cache: pip3 cache purge"
+            echo "   3. Install manually: pip3 install -r requirements.txt"
+            exit 1
+        fi
+    fi
+    echo "✅ Packages installed successfully"
 fi
+
+# Verify version compatibility
+verify_dependencies
 
 # Step 5: Check for documents
 echo ""
